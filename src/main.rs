@@ -191,6 +191,16 @@ async fn binance_eth_usdt_price(time_ms: u64) -> Option<(u64, f64)> {
     return None;
 }
 
+#[no_mangle]
+pub extern "C" fn meow() {
+    println!("meows from rust");
+}
+
+#[no_mangle]
+pub extern "C-unwind" fn meowcpp() {
+    println!("woof from rust");
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
