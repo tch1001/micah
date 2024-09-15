@@ -1,6 +1,7 @@
 use core::time;
 use std::{
     collections::HashMap,
+    ffi::c_char,
     hash::Hash,
     io::{BufRead, Write},
 };
@@ -191,18 +192,16 @@ async fn binance_eth_usdt_price(time_ms: u64) -> Option<(u64, f64)> {
     return None;
 }
 
-#[cxx::bridge]
-mod ffi {
-    extern "Rust" {
-        fn woof();
-        fn process_tx(hash: &str) -> f64;
-    }
-}
-
-pub fn woof() {
+#[no_mangle]
+pub extern "C" fn woof() {
     println!("woof from rust");
 }
-pub fn process_tx(hash: &str) -> f64 {
+#[no_mangle]
+pub extern "C" fn process_tx(hash: *const c_char) -> f64 {
+    let hash = unsafe { std::ffi::CStr::from_ptr(hash) };
+    let hash = hash.to_str().unwrap();
+    println!("hash = {}", hash);
+    dotenv::dotenv().ok();
     let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
     let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
     let ws: WsConnect = WsConnect::new(rpc_url_ws);
@@ -217,10 +216,10 @@ pub fn process_tx(hash: &str) -> f64 {
         println!("eth_usdt_price = {:?}", eth_usdt_price);
         let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
         println!("gas_fee_usdt = {:?}", gas_fee_usdt);
-        return gas_fee_usdt;
+        gas_fee_usdt
     });
-    return gas_fee_usdt;
-    // return gas_fee as f64;
+    println!("return to c: gas_fee_usdt = {:?}", gas_fee_usdt);
+    gas_fee_usdt
 }
 
 #[tokio::main]
