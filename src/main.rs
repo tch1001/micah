@@ -3,7 +3,10 @@ use std::{
     collections::HashMap,
     ffi::c_char,
     hash::Hash,
-    io::{BufRead, Write},
+    io::{BufRead, BufReader, Write},
+    net::{TcpListener, TcpStream},
+    thread,
+    time::Duration,
 };
 
 use alloy::{
@@ -11,10 +14,11 @@ use alloy::{
     primitives::TxHash,
     providers::{Provider, ProviderBuilder, RootProvider, WsConnect},
     pubsub::PubSubFrontend,
-    rpc::types::{Block, BlockTransactionsKind},
+    rpc::types::{Block, BlockTransactionsKind, Transaction},
 };
 use eyre::Result;
 use futures_util::StreamExt;
+use tokio::{runtime, sync::futures, task};
 
 fn read_file(existing_hashes: &mut Vec<String>, file: &std::fs::File) {
     let reader = std::io::BufReader::new(file);
@@ -24,8 +28,9 @@ fn read_file(existing_hashes: &mut Vec<String>, file: &std::fs::File) {
     }
 }
 
-async fn erc20_token_transfer_events() {
-    //     https://api.etherscan.io/api
+static UNISWAP_V3 : &str = "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640";
+async fn erc20_token_transfer_events(startblock: u64, endblock: u64) -> Vec<String> {
+    //    https://api.etherscan.io/api
     //    ?module=account
     //    &action=tokentx
     //    &contractaddress=0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2
@@ -43,8 +48,8 @@ async fn erc20_token_transfer_events() {
     let address = "0x4e83362442b8d1bec281594cea3050c8eb01311c";
     let page = "1";
     let offset = "100";
-    let startblock = "0";
-    let endblock = "27025780";
+    // let startblock = "0";
+    // let endblock = "27025780";
     let sort = "asc";
     let apikey = std::env::var("ETHERSCAN_API_KEY").unwrap();
     let url = format!(
@@ -64,31 +69,39 @@ async fn erc20_token_transfer_events() {
     //       "hash": "0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4",
     // get the hash from above from resp.json()
     let resp = resp.json::<serde_json::Value>().await.unwrap();
-    let mut file = std::fs::File::options()
-        .read(true)
-        .write(true)
-        .open("erc20_token_transfer_events.txt")
-        .unwrap();
-    let mut existing_hashes = vec![];
-    read_file(&mut existing_hashes, &mut file);
+    // let mut file = std::fs::File::options()
+    //     .read(true)
+    //     .write(true)
+    //     .open("erc20_token_transfer_events.txt")
+    //     .unwrap();
+    let mut existing_hashes: Vec<String> = vec![];
+    // read_file(&mut existing_hashes, &mut file);
     for entry in resp["result"].as_array().unwrap() {
         let hash = entry["hash"].as_str().unwrap();
-        if existing_hashes.contains(&hash.to_string()) {
-            continue;
-        }
-        println!("hash = {} appended", hash);
+        existing_hashes.push(hash.to_string());
+        // if existing_hashes.contains(&hash.to_string()) {
+        //     continue;
+        // }
+        // println!("hash = {} appended", hash);
         // append to file
-        writeln!(file, "{}", hash).unwrap();
+        // writeln!(file, "{}", hash).unwrap();
     }
+    existing_hashes
 }
 
 // return timestamp and gas fee
+// cache it with a hashmap
+
 async fn decode_tx(
     provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
     hash: &str,
+    cache: &mut HashMap<String, (u64, u128)>,
 ) -> Option<(u64, u128)> {
     let tx_hash: TxHash = hash.parse().unwrap();
     println!("tx_hash = {:?}", tx_hash);
+    if cache.contains_key(hash) {
+        return Some(cache[hash]);
+    }
     let receipt = provider
         .get_transaction_receipt(tx_hash)
         .await
@@ -112,81 +125,59 @@ async fn decode_tx(
         .unwrap()
         .unwrap();
     let timestamp = timestamp.header.timestamp;
+    cache.insert(hash.to_string(), (timestamp, gas_fee));
     return Some((timestamp, gas_fee));
 }
 
-async fn binance_eth_usdt_price(time_ms: u64) -> Option<(u64, f64)> {
+async fn binance_eth_usdt_price(
+    time_ms: u64,
+    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+) -> Option<(u64, f64)> {
+    if eth_usdt_price_cache.contains_key(&time_ms) {
+        return Some(eth_usdt_price_cache[&time_ms]);
+    }
     // get the price over 10s
-    if false {
-        for i in 0..10 {
-            let url = "https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT";
-            let resp = reqwest::get(url).await.unwrap();
-            let resp = resp.json::<serde_json::Value>().await.unwrap();
-            // println!("resp = {:?}", resp["price"]);
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
-    }
-    if false {
-        let mut historical_price: HashMap<u64, f64> = HashMap::new();
-        for i in 0..1 {
-            let url = "https://api.binance.com/api/v3/historicalTrades?symbol=ETHUSDT";
-            let resp = reqwest::get(url).await.unwrap();
-            let resp = resp.json::<serde_json::Value>().await.unwrap();
-            // println!("resp = {:?}", resp.as_array().unwrap()[0]);
-            for entry in resp.as_array().unwrap() {
+    let mut duration_range: u64 = 1000;
+    for i in 0..10 {
+        duration_range *= 2;
+        let mut url: String = "https://api.binance.com/api/v3/aggTrades?symbol=ETHUSDT"
+            .parse()
+            .unwrap();
+        url += "&startTime=";
+        url += (time_ms - duration_range).to_string().as_str();
+        url += "&endTime=";
+        url += (time_ms + duration_range).to_string().as_str();
+        println!("url = {}", url);
+        let resp = reqwest::get(url).await.unwrap();
+        let resp = resp.json::<serde_json::Value>().await.unwrap();
+        // println!("resp = {:?}", resp);
+        if resp.as_array().unwrap().len() == 0 {
+            println!("no data found for duration_range = {}", duration_range);
+        } else {
+            let resp = resp.as_array().unwrap();
+            let mut closest_time = resp[0]["T"].as_u64().unwrap();
+            let mut returned_price = resp[0]["p"].as_str().unwrap().parse::<f64>().unwrap();
+            for entry in resp[1..].iter() {
                 let data: &serde_json::Map<String, serde_json::Value> = entry.as_object().unwrap();
-                // println!("data = {:?}", data["time"].as_number().unwrap().);
-                let price: f64 = data["price"].as_str().unwrap().parse::<f64>().unwrap();
-                let time: u64 = data["time"].as_number().unwrap().as_u64().unwrap();
-                println!("price = {}, time = {}", price, time);
-                historical_price.insert(time, price);
-            }
-        }
-        println!("historical_price = {:?}", historical_price);
-    }
-    if true {
-        let mut duration_range: u64 = 1000;
-        for i in 0..10 {
-            duration_range *= 2;
-            let mut url: String = "https://api.binance.com/api/v3/aggTrades?symbol=ETHUSDT"
-                .parse()
-                .unwrap();
-            url += "&startTime=";
-            url += (time_ms - duration_range).to_string().as_str();
-            url += "&endTime=";
-            url += (time_ms + duration_range).to_string().as_str();
-            println!("url = {}", url);
-            let resp = reqwest::get(url).await.unwrap();
-            let resp = resp.json::<serde_json::Value>().await.unwrap();
-            // println!("resp = {:?}", resp);
-            if resp.as_array().unwrap().len() == 0 {
-                println!("no data found for duration_range = {}", duration_range);
-            } else {
-                let resp = resp.as_array().unwrap();
-                let mut closest_time = resp[0]["T"].as_u64().unwrap();
-                let mut returned_price = resp[0]["p"].as_str().unwrap().parse::<f64>().unwrap();
-                for entry in resp[1..].iter() {
-                    let data: &serde_json::Map<String, serde_json::Value> =
-                        entry.as_object().unwrap();
-                    let entry_time: u64 = data["T"].as_u64().unwrap();
-                    let entry_price: f64 = data["p"].as_str().unwrap().parse::<f64>().unwrap();
-                    let delta_time = if entry_time < time_ms {
-                        time_ms - entry_time
-                    } else {
-                        entry_time - time_ms
-                    };
-                    let delta_closest_time = if closest_time < time_ms {
-                        time_ms - closest_time
-                    } else {
-                        closest_time - time_ms
-                    };
-                    if delta_time < delta_closest_time {
-                        closest_time = entry_time;
-                        returned_price = entry_price;
-                    }
+                let entry_time: u64 = data["T"].as_u64().unwrap();
+                let entry_price: f64 = data["p"].as_str().unwrap().parse::<f64>().unwrap();
+                let delta_time = if entry_time < time_ms {
+                    time_ms - entry_time
+                } else {
+                    entry_time - time_ms
+                };
+                let delta_closest_time = if closest_time < time_ms {
+                    time_ms - closest_time
+                } else {
+                    closest_time - time_ms
+                };
+                if delta_time < delta_closest_time {
+                    closest_time = entry_time;
+                    returned_price = entry_price;
                 }
-                return Some((closest_time, returned_price));
             }
+            eth_usdt_price_cache.insert(time_ms, (closest_time, returned_price));
+            return Some((closest_time, returned_price));
         }
     }
     return None;
@@ -198,35 +189,124 @@ pub extern "C" fn woof() {
 }
 #[no_mangle]
 pub extern "C" fn process_tx(hash: *const c_char) -> f64 {
-    let hash = unsafe { std::ffi::CStr::from_ptr(hash) };
-    let hash = hash.to_str().unwrap();
-    println!("hash = {}", hash);
-    dotenv::dotenv().ok();
-    let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
-    let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
-    let ws: WsConnect = WsConnect::new(rpc_url_ws);
-    // let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await.unwrap();
-    let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
-        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    let gas_fee_usdt = runtime.block_on(async {
-        let (timestamp, gas_fee) = decode_tx(&http_provider, hash).await.unwrap();
-        let (closest_timestamp, eth_usdt_price) =
-            binance_eth_usdt_price(timestamp * 1000).await.unwrap();
-        println!("eth_usdt_price = {:?}", eth_usdt_price);
-        let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
-        println!("gas_fee_usdt = {:?}", gas_fee_usdt);
-        gas_fee_usdt
-    });
-    println!("return to c: gas_fee_usdt = {:?}", gas_fee_usdt);
-    gas_fee_usdt
+    return 3.14;
+    // let hash = unsafe { std::ffi::CStr::from_ptr(hash) };
+    // let hash = hash.to_str().unwrap();
+    // println!("hash = {}", hash);
+    // dotenv::dotenv().ok();
+    // let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
+    // let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
+    // let ws: WsConnect = WsConnect::new(rpc_url_ws);
+    // // let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await.unwrap();
+    // let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
+    //     ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    // let runtime = tokio::runtime::Runtime::new().unwrap();
+    // let gas_fee_usdt = runtime.block_on(async {
+    //     let (timestamp, gas_fee) = decode_tx(&http_provider, hash).await.unwrap();
+    //     let (closest_timestamp, eth_usdt_price) =
+    //         binance_eth_usdt_price(timestamp * 1000).await.unwrap();
+    //     println!("eth_usdt_price = {:?}", eth_usdt_price);
+    //     let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
+    //     println!("gas_fee_usdt = {:?}", gas_fee_usdt);
+    //     gas_fee_usdt
+    // });
+    // println!("return to c: gas_fee_usdt = {:?}", gas_fee_usdt);
+    // gas_fee_usdt
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv::dotenv().ok();
+async fn process_tx_rust(
+    hash: &str,
+    http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
+    cache: &mut HashMap<String, (u64, u128)>,
+    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+) -> f64 {
+    let (timestamp, gas_fee) = decode_tx(&http_provider, hash, cache).await.unwrap();
+    let (_, eth_usdt_price) = binance_eth_usdt_price(timestamp * 1000, eth_usdt_price_cache)
+        .await
+        .unwrap();
+    let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
+    println!("gas_fee_usdt = {:?}", gas_fee_usdt);
+    return gas_fee_usdt;
+}
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
+    cache: &mut HashMap<String, (u64, u128)>,
+    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+) {
+    let buf_reader = BufReader::new(&mut stream);
+    // let http_request = buf_reader.lines().map(|line| line.unwrap()).take_while(|line| !line.is_empty()).collect::<Vec<String>>();
+    let request_line = buf_reader.lines().next().unwrap().unwrap();
+    // Extract the path from GET /path HTTP/1.1
+    let path = request_line.split_whitespace().nth(1).unwrap();
+    let mut path = path.to_string();
+    path += "?"; // hacky way to get split by ? to work
+                 // split by question mark before and after
+    let action_and_params = path.split("?");
+    // println!("action_and_params = {:?}", action_and_params.clone().collect::<Vec<&str>>());
+    let action_and_params = action_and_params.collect::<Vec<&str>>();
+    let action = action_and_params[0];
+    if action == "/tx" {
+        let params = action_and_params[1];
+        // println!("params = {:?}", params);
+        assert!(params.starts_with("hash="));
+        let hash = params.split("=").nth(1).unwrap();
+        println!("hash = {:?}", hash);
+        assert!(hash.len() == 66);
+        let gas_fee_usdt = process_tx_rust(hash, http_provider, cache, eth_usdt_price_cache).await;
+        // println!("gas_fee_usdt = {:?}", gas_fee_usdt);
+        let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", gas_fee_usdt);
+        stream.write_all(response.as_bytes()).unwrap();
+    } else if action == "/clear_cache" {
+        cache.clear();
+        let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", "cache cleared");
+        stream.write_all(response.as_bytes()).unwrap();
+    } else if action == "/sleep" {
+        thread::sleep(Duration::from_secs(10)); // simulate a long running task
+                                                // multithreaded web server should be able to handle other requests concurrently
+    } else if action == "/batch" {
+        let params_str = action_and_params[1];
+        let params_vec = params_str.split("&").collect::<Vec<&str>>();
+        let start_block_str = params_vec
+            .iter()
+            .find(|&x| x.starts_with("start_block="))
+            .unwrap();
+        let start_block_int = start_block_str
+            .split("=")
+            .nth(1)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let end_block_str = params_vec
+            .iter()
+            .find(|&x| x.starts_with("end_block="))
+            .unwrap();
+        let end_block_int = end_block_str
+            .split("=")
+            .nth(1)
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let tx_list = erc20_token_transfer_events(start_block_int, end_block_int).await;
+        println!("Found {} txs", tx_list.len());
+        let mut processed_tx_list = vec![];
+        for tx in tx_list {
+            let gas_fee_usdt = process_tx_rust(&tx, http_provider, cache, eth_usdt_price_cache).await;
+            processed_tx_list.push((tx,gas_fee_usdt));
+        }
+        let response = format!("HTTP/1.1 200 OK\r\n\r\n{:?}", processed_tx_list);
+        stream.write_all(response.as_bytes()).unwrap();
+    } else {
+        let response = format!("HTTP/1.1 404 NOT FOUND\r\n\r\n{}", "404 NOT FOUND");
+        stream.write_all(response.as_bytes()).unwrap();
+    }
+    // println!("path = {}", path);
+    // println!("http_request = {:?}", http_request);
+}
+
+async fn new_blocks_listener() -> Result<()> {
     let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
-    let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
     println!("RPC_URL_WS = {}", rpc_url_ws);
 
     // erc20_token_transfer_events().await;
@@ -235,28 +315,70 @@ async fn main() -> Result<()> {
     let ws: WsConnect = WsConnect::new(rpc_url_ws);
     // let provider = ProviderBuilder::new().on_ws(ws).await?;
     let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await?;
+    let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
     let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
-        ProviderBuilder::new().on_http(rpc_url_http.parse()?);
-    let (timestamp, gas_fee) = decode_tx(
-        &http_provider,
-        "0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4",
-    )
-    .await
-    .unwrap();
-    let (closest_timestamp, eth_usdt_price) =
-        binance_eth_usdt_price(timestamp * 1000).await.unwrap();
-    println!("eth_usdt_price = {:?}", eth_usdt_price);
-    let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
-    println!("gas_fee_usdt = {:?}", gas_fee_usdt);
-    return Ok(());
-    let sub: alloy::pubsub::Subscription<Block> = provider.subscribe_blocks().await?;
-    let mut stream: futures_util::stream::Take<alloy::pubsub::SubscriptionStream<Block>> =
-        sub.into_stream().take(4);
+        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    let mut cache: HashMap<String, (u64, u128)> = HashMap::new();
+    let mut eth_usdt_price_cache: HashMap<u64, (u64, f64)> = HashMap::new();
+    let sub: alloy::pubsub::Subscription<alloy::primitives::FixedBytes<32>> = provider.subscribe_pending_transactions().await?;
+    let mut stream =
+        sub.into_stream().take_while(|_| futures_util::future::ready(true));
     let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-        while let Some(block) = stream.next().await {
-            println!("Block: {:?}", block);
+        while let Some(tx_hash) = stream.next().await {
+            // if it's calling the uniswap address
+            let tx_response = provider.get_transaction_by_hash(tx_hash).await;
+            if tx_response.is_err() {
+                continue;
+            }
+            let tx = tx_response.unwrap();
+            if tx.is_none() {
+                continue;
+            }
+            let tx = tx.unwrap();
+            // println!("Tx Hash: {:?}", tx_hash);
+            if tx.block_number.is_none() {
+                continue;
+            }
+            if tx.to.is_none() {
+                continue;
+            }
+            let tx_to_address = tx.to.unwrap();
+            let tx_to_str = tx_to_address.to_string();
+            if tx_to_str == UNISWAP_V3 {
+                let tx_hash_str = tx_hash.to_string();
+                let tx_hash_str = tx_hash_str.as_str();
+                process_tx_rust(tx_hash_str, &http_provider, &mut cache, &mut eth_usdt_price_cache).await;
+            }
         }
     });
     handle.await?;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    dotenv::dotenv().ok();
+    let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
+    let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
+        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    let mut cache: HashMap<String, (u64, u128)> = HashMap::new();
+    let mut eth_usdt_price_cache: HashMap<u64, (u64, f64)> = HashMap::new();
+    task::spawn(async {
+        new_blocks_listener().await;
+    });
+    let listener = TcpListener::bind("0.0.0.0:7878").unwrap();
+    for stream in listener.incoming() {
+        let stream = stream.unwrap();
+        // thread::spawn(|| async { // doesn't work because of shared cache
+        handle_connection(
+            stream,
+            &http_provider,
+            &mut cache,
+            &mut eth_usdt_price_cache,
+        )
+        .await;
+        // });
+    }
+
     Ok(())
 }
