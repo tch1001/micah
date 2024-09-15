@@ -4,6 +4,7 @@ fn main() {
         .std("c++14")
         .compile("test-dashboard");
 
+    println!("cargo:rustc-link-lib=cxx_library");
     // println!("cargo:rerun-if-changed=src/main.rs");
     // println!("cargo:rerun-if-changed=src/webserver.cpp");
     // println!("cargo:rerun-if-changed=src/webserver.h");

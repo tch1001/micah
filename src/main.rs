@@ -195,11 +195,32 @@ async fn binance_eth_usdt_price(time_ms: u64) -> Option<(u64, f64)> {
 mod ffi {
     extern "Rust" {
         fn woof();
+        fn process_tx(hash: &str) -> f64;
     }
 }
 
 pub fn woof() {
     println!("woof from rust");
+}
+pub fn process_tx(hash: &str) -> f64 {
+    let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
+    let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
+    let ws: WsConnect = WsConnect::new(rpc_url_ws);
+    // let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await.unwrap();
+    let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
+        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let gas_fee_usdt = runtime.block_on(async {
+        let (timestamp, gas_fee) = decode_tx(&http_provider, hash).await.unwrap();
+        let (closest_timestamp, eth_usdt_price) =
+            binance_eth_usdt_price(timestamp * 1000).await.unwrap();
+        println!("eth_usdt_price = {:?}", eth_usdt_price);
+        let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
+        println!("gas_fee_usdt = {:?}", gas_fee_usdt);
+        return gas_fee_usdt;
+    });
+    return gas_fee_usdt;
+    // return gas_fee as f64;
 }
 
 #[tokio::main]
