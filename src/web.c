@@ -19,6 +19,8 @@
 #include <netdb.h>
 #include <newlib/sys/select.h>
 #include <iostream>
+#include <queue>
+#include <sys/epoll.h>
 
 void serve_connection(int sockfd)
 {
@@ -28,6 +30,9 @@ void serve_connection(int sockfd)
         return;
     }
     char buf[4096];
+    // std::cout << "meows: ";
+    // std::string tmp;
+    // std::cin >> tmp;
     std::cout << "receiving for " << sockfd << std::endl;
     ssize_t n = recv(sockfd, buf, sizeof(buf), 0);
     if (n < 0)
@@ -59,9 +64,23 @@ void serve_connection(int sockfd)
 
     send(sockfd, response, sizeof(response), 0);
 }
-
+void set_non_blocking(int sockfd)
+{
+    int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0)
+    {
+        perror("fcntl");
+        return;
+    }
+    if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+        perror("fcntl");
+        return;
+    }
+}
 int main()
 {
+
     setvbuf(stdout, NULL, _IONBF, 0);
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -70,6 +89,7 @@ int main()
         perror("socket");
         return 1;
     }
+    set_non_blocking(sockfd);
 
     int opt = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
@@ -95,55 +115,60 @@ int main()
         perror("listen");
         return 1;
     }
-    fd_set master_set, working_set;
-    FD_ZERO(&master_set); // Clear the master set
-    int max_sd = sockfd;
-    FD_SET(sockfd, &master_set); // Add the listener to the master set
-    struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
+    int kdpfd = epoll_create(10);
+    if (kdpfd < 0)
+    {
+        perror("epoll_create");
+        return 1;
+    }
+    struct epoll_event ev;
+    ev.events = EPOLLIN | EPOLLET;
+    ev.data.fd = sockfd;
+    if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, sockfd, &ev) < 0)
+    {
+        perror("epoll_ctl");
+        return 1;
+    }
+    struct epoll_event *events;
+    events = (epoll_event *)calloc(10, sizeof(struct epoll_event));
+    if (events == NULL)
+    {
+        perror("calloc");
+        return 1;
+    }
 
     while (1)
     {
-        struct sockaddr_in peer_addr;
-        socklen_t peer_addr_len = sizeof(peer_addr);
-        // int peer_sockfd = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
-        memcpy(&working_set, &master_set, sizeof(master_set));
-        int desc_ready = select(max_sd + 1, &working_set, NULL, NULL, &timeout);
-        if (desc_ready != 0)
+        int nfds = epoll_wait(kdpfd, events, 10, -1);
+        if (nfds < 0)
         {
-            printf("desc_ready: %d\n", desc_ready);
-        }
-
-        if (desc_ready < 0)
-        {
-            perror("select() failed");
+            perror("epoll_wait");
             return 1;
         }
-
-        for (int i = 0; i <= max_sd and desc_ready > 0; i++)
+        for (int i = 0; i < nfds; i++)
         {
-            if (FD_ISSET(i, &working_set))
+            if (events[i].data.fd == sockfd)
             {
-                --desc_ready;
-                if (i == sockfd)
+                struct sockaddr_in peer_addr;
+                socklen_t peer_addr_len = sizeof(peer_addr);
+                int peer_sockfd = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
+                if (peer_sockfd < 0)
                 {
-                    int new_sock = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
-                    if (new_sock < 0)
-                    {
-                        perror("accept");
-                        return 1;
-                    }
-                    FD_SET(new_sock, &master_set);
-                    if (new_sock > max_sd)
-                    {
-                        max_sd = new_sock;
-                    }
+                    perror("accept");
+                    return 1;
                 }
-                else
+                set_non_blocking(peer_sockfd);
+                ev.events = EPOLLIN | EPOLLET;
+                ev.data.fd = peer_sockfd;
+                if (epoll_ctl(kdpfd, EPOLL_CTL_ADD, peer_sockfd, &ev) < 0)
                 {
-                    serve_connection(i);
+                    perror("epoll_ctl");
+                    return 1;
                 }
+            }
+            else
+            {
+                serve_connection(events[i].data.fd);
             }
         }
     }
