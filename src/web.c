@@ -58,7 +58,8 @@ void serve_connection(int sockfd)
         printf("tx_fee: %.2f\n", tx_fee);
 
         char response[1024];
-        snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%.2f", (int)strlen(response), tx_fee);
+        // snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%.2f", (int)strlen(response), tx_fee);
+        strncpy(response, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello", sizeof(response));
 
         send(sockfd, response, sizeof(response), 0);
     }
