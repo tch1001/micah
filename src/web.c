@@ -17,6 +17,8 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
+#include <newlib/sys/select.h>
+#include <iostream>
 
 void serve_connection(int sockfd)
 {
@@ -25,50 +27,41 @@ void serve_connection(int sockfd)
         perror("send");
         return;
     }
-    while (1)
+    char buf[4096];
+    std::cout << "receiving for " << sockfd << std::endl;
+    ssize_t n = recv(sockfd, buf, sizeof(buf), 0);
+    if (n < 0)
     {
-        char buf[4096];
-        ssize_t n = recv(sockfd, buf, sizeof(buf), 0);
-        if (n < 0)
-        {
-            perror("recv");
-            return;
-        }
-        else if (n == 0)
-        {
-            break;
-        }
-
-        /*
-        GET /0x123 HTTP/1.1
-        Host: localhost:8081
-        User-Agent: curl/7.71.1
-        Accept:
-        */
-
-        for (int i = 0; i < n; i++)
-        {
-            printf("%c", buf[i]);
-        }
-        printf("newline\n");
-        // process_tx
-        double tx_fee;
-        const char *tx_str = "0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4";
-        tx_fee = process_tx(tx_str);
-        printf("tx_fee: %.2f\n", tx_fee);
-
-        char response[1024];
-        // snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%.2f", (int)strlen(response), tx_fee);
-        strncpy(response, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello", sizeof(response));
-
-        send(sockfd, response, sizeof(response), 0);
+        perror("recv");
+        return;
     }
-    close(sockfd);
+    else if (n == 0)
+    {
+        return;
+    }
+
+    /*
+    GET /0x123 HTTP/1.1
+    Host: localhost:8081
+    User-Agent: curl/7.71.1
+    Accept:
+    */
+
+    for (int i = 0; i < n; i++)
+    {
+        std::cout << buf[i];
+    }
+    std::cout << "newline" << std::endl;
+
+    char response[1024];
+    // snprintf(response, sizeof(response), "HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%.2f", (int)strlen(response), tx_fee);
+    strncpy(response, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello", sizeof(response));
+
+    send(sockfd, response, sizeof(response), 0);
 }
 
 int main()
 {
-    woof();
     setvbuf(stdout, NULL, _IONBF, 0);
 
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -102,17 +95,57 @@ int main()
         perror("listen");
         return 1;
     }
+    fd_set master_set, working_set;
+    FD_ZERO(&master_set); // Clear the master set
+    int max_sd = sockfd;
+    FD_SET(sockfd, &master_set); // Add the listener to the master set
+    struct timeval timeout;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+
     while (1)
     {
         struct sockaddr_in peer_addr;
         socklen_t peer_addr_len = sizeof(peer_addr);
-        int peer_sockfd = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
-        if (peer_sockfd < 0)
+        // int peer_sockfd = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
+        memcpy(&working_set, &master_set, sizeof(master_set));
+        int desc_ready = select(max_sd + 1, &working_set, NULL, NULL, &timeout);
+        if (desc_ready != 0)
         {
-            perror("accept");
+            printf("desc_ready: %d\n", desc_ready);
+        }
+
+        if (desc_ready < 0)
+        {
+            perror("select() failed");
             return 1;
         }
-        serve_connection(peer_sockfd);
+
+        for (int i = 0; i <= max_sd and desc_ready > 0; i++)
+        {
+            if (FD_ISSET(i, &working_set))
+            {
+                --desc_ready;
+                if (i == sockfd)
+                {
+                    int new_sock = accept(sockfd, (struct sockaddr *)&peer_addr, &peer_addr_len);
+                    if (new_sock < 0)
+                    {
+                        perror("accept");
+                        return 1;
+                    }
+                    FD_SET(new_sock, &master_set);
+                    if (new_sock > max_sd)
+                    {
+                        max_sd = new_sock;
+                    }
+                }
+                else
+                {
+                    serve_connection(i);
+                }
+            }
+        }
     }
 
     return 0;
