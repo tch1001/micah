@@ -8,6 +8,7 @@ use std::{
     thread,
     time::Duration,
 };
+use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use alloy::{
     eips::BlockId,
@@ -41,20 +42,21 @@ async fn erc20_token_transfer_events(startblock: u64, endblock: u64) -> Vec<Stri
     //    &endblock=27025780
     //    &sort=asc
     //    &apikey=YourApiKeyToken
+    // https://api.etherscan.io/api?module=account&action=tokentx&address=0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640&page=1&offset=100&sort=desc&apikey=VFH5B8U2CJSMGXTVTFUC4Q233FCHT9MYHM
     let url = "https://api.etherscan.io/api";
     let module = "account";
     let action = "tokentx";
-    let contractaddress = "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2";
-    let address = "0x4e83362442b8d1bec281594cea3050c8eb01311c";
+    // let contractaddress = "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2";
+    let address = "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640";
     let page = "1";
     let offset = "100";
     // let startblock = "0";
     // let endblock = "27025780";
-    let sort = "asc";
+    let sort = "desc";
     let apikey = std::env::var("ETHERSCAN_API_KEY").unwrap();
     let url = format!(
-        "{}?module={}&action={}&contractaddress={}&address={}&page={}&offset={}&startblock={}&endblock={}&sort={}&apikey={}",
-        url, module, action, contractaddress, address, page, offset, startblock, endblock, sort, apikey
+        "{}?module={}&action={}&address={}&page={}&offset={}&sort={}&apikey={}",
+        url, module, action, address, page, offset, sort, apikey
     );
     println!("url = {}", url);
     let resp = reqwest::get(&url).await.unwrap();
@@ -181,37 +183,6 @@ async fn binance_eth_usdt_price(
         }
     }
     return None;
-}
-
-#[no_mangle]
-pub extern "C" fn woof() {
-    println!("woof from rust");
-}
-#[no_mangle]
-pub extern "C" fn process_tx(hash: *const c_char) -> f64 {
-    return 3.14;
-    // let hash = unsafe { std::ffi::CStr::from_ptr(hash) };
-    // let hash = hash.to_str().unwrap();
-    // println!("hash = {}", hash);
-    // dotenv::dotenv().ok();
-    // let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
-    // let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
-    // let ws: WsConnect = WsConnect::new(rpc_url_ws);
-    // // let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await.unwrap();
-    // let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
-    //     ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
-    // let runtime = tokio::runtime::Runtime::new().unwrap();
-    // let gas_fee_usdt = runtime.block_on(async {
-    //     let (timestamp, gas_fee) = decode_tx(&http_provider, hash).await.unwrap();
-    //     let (closest_timestamp, eth_usdt_price) =
-    //         binance_eth_usdt_price(timestamp * 1000).await.unwrap();
-    //     println!("eth_usdt_price = {:?}", eth_usdt_price);
-    //     let gas_fee_usdt = gas_fee as f64 * eth_usdt_price / 1e18;
-    //     println!("gas_fee_usdt = {:?}", gas_fee_usdt);
-    //     gas_fee_usdt
-    // });
-    // println!("return to c: gas_fee_usdt = {:?}", gas_fee_usdt);
-    // gas_fee_usdt
 }
 
 async fn process_tx_rust(
@@ -358,6 +329,23 @@ async fn new_blocks_listener() -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
+    // erc20_token_transfer_events(0, 100).await;
+    let producer : FutureProducer = rdkafka::config::ClientConfig::new()
+        .set("bootstrap.servers", "localhost:9092")
+        .set("message.timeout.ms", "5000")
+        .create()
+        .expect("Producer creation error");
+    let topic = "test-topic";
+    let value = "Hello, world!";
+    let meow = producer
+            .send(
+                FutureRecord::to(&topic)
+                    .payload(value.as_bytes())
+                    .key("alice"), Duration::from_secs(1)
+                );
+    let x = meow.await;
+    println!("x = {:?}", x);
+    return Ok(());
     let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
     let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
         ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());

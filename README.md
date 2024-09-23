@@ -2,8 +2,9 @@
 
 [https://etherscan.io/address/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640#tokentxns](https://etherscan.io/address/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640#tokentxns)
 
+API: [https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address](https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address)
+
 ## Known Issues / TODO
-- Can't get all ERC20 token trades from etherscan without filtering to a specific address
 - Can't detect mempool tx that are interacting (via internal tx) with uniswap
 - Multithreaded doesn't work because I am unfamiliar with async rust and shared data structures
 - Not dockerized
@@ -23,6 +24,22 @@ Query the following endpoints
 - [http://localhost:7878/tx?hash=0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4](http://localhost:7878/tx?hash=0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4)
 - [http://localhost:7878/batch?start_block=0&end_block=4928274](http://localhost:7878/batch?start_block=0&end_block=4928274)
 
+
+### Kafka
+[https://hub.docker.com/r/apache/kafka](https://hub.docker.com/r/apache/kafka) 
+```bash
+docker run -d --name broker apache/kafka:latest
+# or 
+docker compose up -d
+docker exec --workdir /opt/kafka/bin/ -it broker sh
+./kafka-topics.sh --bootstrap-server localhost:9092 --create --topic test-topic
+./kafka-console-producer.sh --bootstrap-server localhost:9092 --topic test-topic
+./kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic test-topic --from-beginning
+brew install kafka 
+kafka-console-consumer --bootstrap-server localhost:9092 --topic test-topic 
+```
+
+[https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust](https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust) 
 
 ### Stress Testing (Part 1)
 Use [https://github.com/BuoyantIO/slow_cooker](https://github.com/BuoyantIO/slow_cooker) on `endpoints.txt`. 
