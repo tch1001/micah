@@ -42,7 +42,7 @@ async fn erc20_token_transfer_events(startblock: u64, endblock: u64) -> Vec<Stri
     //    &endblock=27025780
     //    &sort=asc
     //    &apikey=YourApiKeyToken
-    // https://api.etherscan.io/api?module=account&action=tokentx&address=0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640&page=1&offset=100&sort=desc&apikey=VFH5B8U2CJSMGXTVTFUC4Q233FCHT9MYHM
+    // https://api.etherscan.io/api?module=account&action=tokentx&address=0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640&page=1&offset=100&sort=desc&apikey=API
     let url = "https://api.etherscan.io/api";
     let module = "account";
     let action = "tokentx";
