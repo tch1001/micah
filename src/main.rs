@@ -1,12 +1,6 @@
 use core::time;
 use std::{
-    collections::HashMap,
-    ffi::c_char,
-    hash::Hash,
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
-    thread,
-    time::Duration,
+    collections::HashMap, ffi::c_char, hash::Hash, io::{BufRead, BufReader, Write}, net::{TcpListener, TcpStream}, sync::Arc, thread, time::Duration
 };
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
@@ -20,6 +14,9 @@ use alloy::{
 use eyre::Result;
 use futures_util::StreamExt;
 use tokio::{runtime, sync::futures, task};
+
+use tokio::sync::Mutex;
+
 
 fn read_file(existing_hashes: &mut Vec<String>, file: &std::fs::File) {
     let reader = std::io::BufReader::new(file);
@@ -97,12 +94,13 @@ async fn erc20_token_transfer_events(startblock: u64, endblock: u64) -> Vec<Stri
 async fn decode_tx(
     provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
     hash: &str,
-    cache: &mut HashMap<String, (u64, u128)>,
+    cache: Arc<Mutex<HashMap<String, (u64, u128)>>>,
 ) -> Option<(u64, u128)> {
     let tx_hash: TxHash = hash.parse().unwrap();
     println!("tx_hash = {:?}", tx_hash);
-    if cache.contains_key(hash) {
-        return Some(cache[hash]);
+    let local_cache = cache.lock().unwrap();
+    if local_cache.contains_key(hash) {
+        return Some(local_cache[hash]);
     }
     let receipt = provider
         .get_transaction_receipt(tx_hash)
@@ -127,16 +125,17 @@ async fn decode_tx(
         .unwrap()
         .unwrap();
     let timestamp = timestamp.header.timestamp;
-    cache.insert(hash.to_string(), (timestamp, gas_fee));
+    cache.lock().unwrap().insert(hash.to_string(), (timestamp, gas_fee));
     return Some((timestamp, gas_fee));
 }
 
 async fn binance_eth_usdt_price(
     time_ms: u64,
-    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+    eth_usdt_price_cache: Arc<Mutex<HashMap<u64, (u64, f64)>>>,
 ) -> Option<(u64, f64)> {
-    if eth_usdt_price_cache.contains_key(&time_ms) {
-        return Some(eth_usdt_price_cache[&time_ms]);
+    let local_cache = eth_usdt_price_cache.lock().unwrap();
+    if local_cache.contains_key(&time_ms) {
+        return Some(local_cache[&time_ms]);
     }
     // get the price over 10s
     let mut duration_range: u64 = 1000;
@@ -178,7 +177,7 @@ async fn binance_eth_usdt_price(
                     returned_price = entry_price;
                 }
             }
-            eth_usdt_price_cache.insert(time_ms, (closest_time, returned_price));
+            eth_usdt_price_cache.lock().unwrap().insert(time_ms, (closest_time, returned_price));
             return Some((closest_time, returned_price));
         }
     }
@@ -188,8 +187,8 @@ async fn binance_eth_usdt_price(
 async fn process_tx_rust(
     hash: &str,
     http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
-    cache: &mut HashMap<String, (u64, u128)>,
-    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+    cache: Arc<tokio::sync::Mutex<HashMap<String, (u64, u128)>>>,
+    eth_usdt_price_cache: Arc<tokio::sync::Mutex<HashMap<u64, (u64, f64)>>>,
 ) -> f64 {
     let (timestamp, gas_fee) = decode_tx(&http_provider, hash, cache).await.unwrap();
     let (_, eth_usdt_price) = binance_eth_usdt_price(timestamp * 1000, eth_usdt_price_cache)
@@ -203,8 +202,8 @@ async fn process_tx_rust(
 async fn handle_connection(
     mut stream: TcpStream,
     http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
-    cache: &mut HashMap<String, (u64, u128)>,
-    eth_usdt_price_cache: &mut HashMap<u64, (u64, f64)>,
+    cache: Arc<Mutex<HashMap<String, (u64, u128)>>>,
+    eth_usdt_price_cache: Arc<Mutex<HashMap<u64, (u64, f64)>>>,
 ) {
     let buf_reader = BufReader::new(&mut stream);
     // let http_request = buf_reader.lines().map(|line| line.unwrap()).take_while(|line| !line.is_empty()).collect::<Vec<String>>();
@@ -230,7 +229,7 @@ async fn handle_connection(
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", gas_fee_usdt);
         stream.write_all(response.as_bytes()).unwrap();
     } else if action == "/clear_cache" {
-        cache.clear();
+        cache.lock().unwrap().clear();
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", "cache cleared");
         stream.write_all(response.as_bytes()).unwrap();
     } else if action == "/sleep" {
@@ -263,7 +262,7 @@ async fn handle_connection(
         println!("Found {} txs", tx_list.len());
         let mut processed_tx_list = vec![];
         for tx in tx_list {
-            let gas_fee_usdt = process_tx_rust(&tx, http_provider, cache, eth_usdt_price_cache).await;
+            let gas_fee_usdt = process_tx_rust(&tx, http_provider, cache.clone(), eth_usdt_price_cache.clone()).await;
             processed_tx_list.push((tx,gas_fee_usdt));
         }
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{:?}", processed_tx_list);
@@ -290,7 +289,9 @@ async fn new_blocks_listener() -> Result<()> {
     let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
         ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
     let mut cache: HashMap<String, (u64, u128)> = HashMap::new();
+    let cache_arc = Arc::new(tokio::sync::Mutex::new(cache));
     let mut eth_usdt_price_cache: HashMap<u64, (u64, f64)> = HashMap::new();
+    let eth_usdt_arc = Arc::new(tokio::sync::Mutex::new(eth_usdt_price_cache));
     let sub: alloy::pubsub::Subscription<alloy::primitives::FixedBytes<32>> = provider.subscribe_pending_transactions().await?;
     let mut stream =
         sub.into_stream().take_while(|_| futures_util::future::ready(true));
@@ -318,12 +319,47 @@ async fn new_blocks_listener() -> Result<()> {
             if tx_to_str == UNISWAP_V3 {
                 let tx_hash_str = tx_hash.to_string();
                 let tx_hash_str = tx_hash_str.as_str();
-                process_tx_rust(tx_hash_str, &http_provider, &mut cache, &mut eth_usdt_price_cache).await;
+                process_tx_rust(tx_hash_str, &http_provider, cache_arc.clone(), eth_usdt_arc.clone()).await;
             }
         }
     });
     handle.await?;
     Ok(())
+}
+
+// #[derive(Copy, Clone)]
+struct Point {
+    x: i32,
+    y: i32
+}
+enum Nat {
+    Zero,
+    Succ(Box<Nat>)
+}
+
+struct MyBox<T> {
+    data: T
+}
+
+impl<T> MyBox<T> {
+    fn new(x: T) -> MyBox<T> {
+        return MyBox {data : x};
+    }
+}
+
+struct Wolf{}
+impl Wolf{}
+
+trait MyClone<T> {
+    fn clone(&self) -> T ;
+}
+impl MyClone<Point> for Point {
+    fn clone(&self) -> Point {
+        return Point {x : self.x, y : self.y};
+    }
+}
+fn id(p : Point) -> Point {
+    return p;
 }
 
 #[tokio::main]
@@ -345,28 +381,28 @@ async fn main() -> Result<()> {
                 );
     let x = meow.await;
     println!("x = {:?}", x);
-    return Ok(());
     let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
     let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
         ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
-    let mut cache: HashMap<String, (u64, u128)> = HashMap::new();
-    let mut eth_usdt_price_cache: HashMap<u64, (u64, f64)> = HashMap::new();
+    let cache: Arc<tokio::sync::Mutex<HashMap<String, (u64, u128)>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let eth_usdt_price_cache: Arc<tokio::sync::Mutex<HashMap<u64, (u64, f64)>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     task::spawn(async {
         new_blocks_listener().await;
     });
     let listener = TcpListener::bind("0.0.0.0:7878").unwrap();
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        // thread::spawn(|| async { // doesn't work because of shared cache
-        handle_connection(
-            stream,
-            &http_provider,
-            &mut cache,
-            &mut eth_usdt_price_cache,
-        )
-        .await;
-        // });
+        thread::spawn(|| async { // doesn't work because of shared cache
+            handle_connection(
+                stream,
+                &http_provider,
+                cache,
+                eth_usdt_price_cache,
+            )
+            .await;
+        });
     }
+    
 
     Ok(())
 }
