@@ -21,9 +21,8 @@ cargo run
 ```
 
 Query the following endpoints
-- [http://localhost:7878/tx?hash=0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4](http://localhost:7878/tx?hash=0xe8c208398bd5ae8e4c237658580db56a2a94dfa0ca382c99b776fa6e7d31d5b4)
+- [http://localhost:7878/tx?hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c](http://localhost:7878/tx?hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c) example for single tx, accuracy is demonstrated
 - [http://localhost:7878/batch?start_block=0&end_block=4928274](http://localhost:7878/batch?start_block=0&end_block=4928274)
-
 
 ### Kafka
 [https://hub.docker.com/r/apache/kafka](https://hub.docker.com/r/apache/kafka) 

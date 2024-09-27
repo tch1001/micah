@@ -17,6 +17,8 @@ use tokio::{runtime, sync::futures, task};
 
 use tokio::sync::Mutex;
 
+use std::sync::Mutex as StdMutex;
+
 
 fn read_file(existing_hashes: &mut Vec<String>, file: &std::fs::File) {
     let reader = std::io::BufReader::new(file);
@@ -92,16 +94,19 @@ async fn erc20_token_transfer_events(startblock: u64, endblock: u64) -> Vec<Stri
 // cache it with a hashmap
 
 async fn decode_tx(
-    provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
+    provider: Arc<Mutex<RootProvider<alloy::transports::http::Http<reqwest::Client>>>>,
     hash: &str,
     cache: Arc<Mutex<HashMap<String, (u64, u128)>>>,
 ) -> Option<(u64, u128)> {
     let tx_hash: TxHash = hash.parse().unwrap();
     println!("tx_hash = {:?}", tx_hash);
-    let local_cache = cache.lock().unwrap();
+    let mut local_cache = cache.lock().await;
+    println!("got lock");
     if local_cache.contains_key(hash) {
         return Some(local_cache[hash]);
     }
+    let provider = provider.lock().await;
+    println!("got lock 2");
     let receipt = provider
         .get_transaction_receipt(tx_hash)
         .await
@@ -125,7 +130,9 @@ async fn decode_tx(
         .unwrap()
         .unwrap();
     let timestamp = timestamp.header.timestamp;
-    cache.lock().unwrap().insert(hash.to_string(), (timestamp, gas_fee));
+    // let tmp = cache.lock().await;
+    // tmp.insert(k, v);
+    local_cache.insert(hash.to_string(), (timestamp, gas_fee));
     return Some((timestamp, gas_fee));
 }
 
@@ -133,7 +140,7 @@ async fn binance_eth_usdt_price(
     time_ms: u64,
     eth_usdt_price_cache: Arc<Mutex<HashMap<u64, (u64, f64)>>>,
 ) -> Option<(u64, f64)> {
-    let local_cache = eth_usdt_price_cache.lock().unwrap();
+    let mut local_cache = eth_usdt_price_cache.lock().await;
     if local_cache.contains_key(&time_ms) {
         return Some(local_cache[&time_ms]);
     }
@@ -177,7 +184,7 @@ async fn binance_eth_usdt_price(
                     returned_price = entry_price;
                 }
             }
-            eth_usdt_price_cache.lock().unwrap().insert(time_ms, (closest_time, returned_price));
+            local_cache.insert(time_ms, (closest_time, returned_price));
             return Some((closest_time, returned_price));
         }
     }
@@ -186,11 +193,11 @@ async fn binance_eth_usdt_price(
 
 async fn process_tx_rust(
     hash: &str,
-    http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
+    http_provider: Arc<Mutex<RootProvider<alloy::transports::http::Http<reqwest::Client>>>>,
     cache: Arc<tokio::sync::Mutex<HashMap<String, (u64, u128)>>>,
     eth_usdt_price_cache: Arc<tokio::sync::Mutex<HashMap<u64, (u64, f64)>>>,
 ) -> f64 {
-    let (timestamp, gas_fee) = decode_tx(&http_provider, hash, cache).await.unwrap();
+    let (timestamp, gas_fee) = decode_tx(http_provider, hash, cache).await.unwrap();
     let (_, eth_usdt_price) = binance_eth_usdt_price(timestamp * 1000, eth_usdt_price_cache)
         .await
         .unwrap();
@@ -201,7 +208,7 @@ async fn process_tx_rust(
 
 async fn handle_connection(
     mut stream: TcpStream,
-    http_provider: &RootProvider<alloy::transports::http::Http<reqwest::Client>>,
+    http_provider: Arc<Mutex<RootProvider<alloy::transports::http::Http<reqwest::Client>>>>,
     cache: Arc<Mutex<HashMap<String, (u64, u128)>>>,
     eth_usdt_price_cache: Arc<Mutex<HashMap<u64, (u64, f64)>>>,
 ) {
@@ -229,7 +236,7 @@ async fn handle_connection(
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", gas_fee_usdt);
         stream.write_all(response.as_bytes()).unwrap();
     } else if action == "/clear_cache" {
-        cache.lock().unwrap().clear();
+        cache.lock().await.clear();
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{}", "cache cleared");
         stream.write_all(response.as_bytes()).unwrap();
     } else if action == "/sleep" {
@@ -262,7 +269,7 @@ async fn handle_connection(
         println!("Found {} txs", tx_list.len());
         let mut processed_tx_list = vec![];
         for tx in tx_list {
-            let gas_fee_usdt = process_tx_rust(&tx, http_provider, cache.clone(), eth_usdt_price_cache.clone()).await;
+            let gas_fee_usdt = process_tx_rust(&tx, http_provider.clone(), cache.clone(), eth_usdt_price_cache.clone()).await;
             processed_tx_list.push((tx,gas_fee_usdt));
         }
         let response = format!("HTTP/1.1 200 OK\r\n\r\n{:?}", processed_tx_list);
@@ -275,7 +282,7 @@ async fn handle_connection(
     // println!("http_request = {:?}", http_request);
 }
 
-async fn new_blocks_listener() -> Result<()> {
+async fn new_blocks_listener(http_provider: Arc<Mutex<RootProvider<alloy::transports::http::Http<reqwest::Client>>>>) -> Result<()> {
     let rpc_url_ws: String = std::env::var("RPC_URL_WS").unwrap();
     println!("RPC_URL_WS = {}", rpc_url_ws);
 
@@ -286,8 +293,8 @@ async fn new_blocks_listener() -> Result<()> {
     // let provider = ProviderBuilder::new().on_ws(ws).await?;
     let provider: RootProvider<PubSubFrontend> = ProviderBuilder::new().on_ws(ws).await?;
     let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
-    let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
-        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    // let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
+    //     ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
     let mut cache: HashMap<String, (u64, u128)> = HashMap::new();
     let cache_arc = Arc::new(tokio::sync::Mutex::new(cache));
     let mut eth_usdt_price_cache: HashMap<u64, (u64, f64)> = HashMap::new();
@@ -319,8 +326,9 @@ async fn new_blocks_listener() -> Result<()> {
             if tx_to_str == UNISWAP_V3 {
                 let tx_hash_str = tx_hash.to_string();
                 let tx_hash_str = tx_hash_str.as_str();
-                process_tx_rust(tx_hash_str, &http_provider, cache_arc.clone(), eth_usdt_arc.clone()).await;
+                process_tx_rust(tx_hash_str, http_provider.clone(), cache_arc.clone(), eth_usdt_arc.clone()).await;
             }
+            println!("Tx Hash: {:?}", tx_hash);
         }
     });
     handle.await?;
@@ -366,38 +374,42 @@ fn id(p : Point) -> Point {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     // erc20_token_transfer_events(0, 100).await;
-    let producer : FutureProducer = rdkafka::config::ClientConfig::new()
-        .set("bootstrap.servers", "localhost:9092")
-        .set("message.timeout.ms", "5000")
-        .create()
-        .expect("Producer creation error");
-    let topic = "test-topic";
-    let value = "Hello, world!";
-    let meow = producer
-            .send(
-                FutureRecord::to(&topic)
-                    .payload(value.as_bytes())
-                    .key("alice"), Duration::from_secs(1)
-                );
-    let x = meow.await;
-    println!("x = {:?}", x);
+    // let producer : FutureProducer = rdkafka::config::ClientConfig::new()
+    //     .set("bootstrap.servers", "localhost:9092")
+    //     .set("message.timeout.ms", "5000")
+    //     .create()
+    //     .expect("Producer creation error");
+    // let topic = "test-topic";
+    // let value = "Hello, world!";
+    // let meow = producer
+    //         .send(
+    //             FutureRecord::to(&topic)
+    //                 .payload(value.as_bytes())
+    //                 .key("alice"), Duration::from_secs(1)
+    //             );
+    // let x = meow.await;
+    // println!("x = {:?}", x);
     let rpc_url_http: String = std::env::var("RPC_URL_HTTP").unwrap();
-    let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
-        ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    let http_prov = ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+    let http_provider: Arc<Mutex<RootProvider<alloy::transports::http::Http<reqwest::Client>>>> = Arc::new(Mutex::new(http_prov));
     let cache: Arc<tokio::sync::Mutex<HashMap<String, (u64, u128)>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
     let eth_usdt_price_cache: Arc<tokio::sync::Mutex<HashMap<u64, (u64, f64)>>> = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let hpc = http_provider.clone();
     task::spawn(async {
-        new_blocks_listener().await;
+        let _ = new_blocks_listener(hpc).await;
     });
     let listener = TcpListener::bind("0.0.0.0:7878").unwrap();
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        thread::spawn(|| async { // doesn't work because of shared cache
+        let hpc = http_provider.clone();
+        let cache_clone = cache.clone();
+        let eupcc = eth_usdt_price_cache.clone();
+        task::spawn(async { // doesn't work because of shared cache
             handle_connection(
                 stream,
-                &http_provider,
-                cache,
-                eth_usdt_price_cache,
+                hpc,
+                cache_clone,
+                eupcc,
             )
             .await;
         });
