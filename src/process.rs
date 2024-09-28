@@ -202,3 +202,20 @@ async fn main() {
         }
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn test_decode_tx() {
+        dotenv::dotenv().ok();
+
+        let rpc_url_http = std::env::var("RPC_URL_HTTP").expect("RPC_URL_HTTP must be set");
+        let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
+            ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
+        let hash = "0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c";
+        let result = decode_tx(&http_provider, &hash.to_string()).await;
+        assert_eq!(result.is_ok(), true);
+        let expected = (4297515337306724, 1727432927);
+        assert_eq!(result.unwrap(), expected);
+    }
+}

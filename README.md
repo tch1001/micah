@@ -1,30 +1,70 @@
 # Uniswap Trades Tracker
 
-[https://etherscan.io/address/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640#tokentxns](https://etherscan.io/address/0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640#tokentxns)
+![diagram](./micah_arch.png)
 
-API: [https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address](https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address)
+## API Documentation
+
+See Demo below for examples.
+
+`/health`
+Returns "OK" if the server is up.
+
+`/tx/:hash`
+
+- hash: hash of the uniswap tx
+  Returns the gas fee in USDT (at time of trade), calculated using gas*used * gas*price * eth_usdt_price, where eth_usdt_price is fetched from binance.
+
+`/batch?start_block=:start_block&end_block=:end_block`
+
+- start_block: start block number
+- end_block: end block number
+  Starts a batch job to fetch all uniswap txs in the given range. Results are saved in cache for fast retrieval.
+
+  Returns a list of tx hashes, in the format of
+
+```bash
+{
+  "ok": true,
+  "hashes": [
+    "0x1234",
+    "0x5678"
+  ]
+}
+```
 
 ## Known Issues / TODO
 
 - Can't detect mempool tx that are interacting (via internal tx) with uniswap
-- Multithreaded doesn't work because I am unfamiliar with async rust and shared data structures
-- Not dockerized
-- Haven't implemented unit tests
+- Connection pooler for alloy provider
 
 ## Dev Setup
 
-Tunnel to home network for geth full node.
+Tunnel to home network for geth full node. Or just use some public endpoint (features might be limited).
 
 ```bash
-ssh -N -f -L 8546:localhost:8546 -L 8545:localhost:8545 <REDACTED>
+ssh -N -f -L 8546:localhost:8546 -L 8545:localhost:8545 user@ip
 cp .env.example .env # replace with own stuff
-cargo run
+docker compose up -d
+docker exec --workdir /opt/kafka/bin/ -it broker ./kafka-topics.sh --bootstrap-server localhost:9092 --create --topic test-topic
+docker compose up -d process web listener
 ```
+
+## Demo
+
+If you're unable to setup, ask me on telegram @tch1001 for the IP.
 
 Query the following endpoints
 
-- [http://localhost:7878/tx/hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c](http://localhost:7878/tx/hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c) example for single tx, accuracy is demonstrated
-- [http://localhost:7878/batch?start_block=20849591&end_block=20849593](http://localhost:7878/batch?start_block=20849591&end_block=20849593)
+- [http://localhost:7878/tx/0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c](http://localhost:7878/tx/0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c) example for single tx, accuracy is demonstrated
+- [http://localhost:7878/batch?start_block=20849592&end_block=20849592](http://localhost:7878/batch?start_block=20849592&end_block=20849592) for batch processing
+
+## Unit Tests
+
+```bash
+cargo test
+```
+
+# =========================== FOR SELF ===========================
 
 ### Kafka
 
