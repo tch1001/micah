@@ -2,22 +2,34 @@
 
 ![diagram](./micah_arch.png)
 
+Relevant files for reading (ignore the rest, they were experimental)
+
+```bash
+src/process.rs     # for ingesting from MQ and processing and writing to cache
+src/web.rs         # for serving API (/tx and /batch)
+Dockerfile         # setup
+docker-compose.yml # setup
+```
+
 ## API Documentation
 
 See Demo below for examples.
 
 `/health`
+
 Returns "OK" if the server is up.
 
 `/tx/:hash`
 
 - hash: hash of the uniswap tx
+
   Returns the gas fee in USDT (at time of trade), calculated using gas*used * gas*price * eth_usdt_price, where eth_usdt_price is fetched from binance.
 
 `/batch?start_block=:start_block&end_block=:end_block`
 
 - start_block: start block number
 - end_block: end block number
+
   Starts a batch job to fetch all uniswap txs in the given range. Results are saved in cache for fast retrieval.
 
   Returns a list of tx hashes, in the format of
@@ -37,7 +49,7 @@ Returns "OK" if the server is up.
 - Can't detect mempool tx that are interacting (via internal tx) with uniswap
 - Connection pooler for alloy provider
 
-## Dev Setup
+## Demo Setup
 
 Tunnel to home network for geth full node. Or just use some public endpoint (features might be limited).
 
@@ -49,7 +61,7 @@ docker exec --workdir /opt/kafka/bin/ -it broker ./kafka-topics.sh --bootstrap-s
 docker compose up -d process web listener
 ```
 
-## Demo
+## Demo Queries
 
 If you're unable to setup, ask me on telegram @tch1001 for the IP.
 

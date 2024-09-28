@@ -42,7 +42,6 @@
 //     return 1;
 // }
 
-
 // async fn async_main(){
 //     futures::join!(woof(), meow());
 // }
@@ -58,9 +57,9 @@
 //     // cat.block_on_all();
 // }
 
-use tokio;
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio;
 
 async fn adder(hm: Arc<Mutex<HashMap<String, i32>>>, ctr: i32) {
     let ctr_str: String = ctr.to_string();
