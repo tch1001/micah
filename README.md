@@ -5,6 +5,7 @@
 API: [https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address](https://docs.etherscan.io/api-endpoints/accounts#get-a-list-of-erc20-token-transfer-events-by-address)
 
 ## Known Issues / TODO
+
 - Can't detect mempool tx that are interacting (via internal tx) with uniswap
 - Multithreaded doesn't work because I am unfamiliar with async rust and shared data structures
 - Not dockerized
@@ -21,39 +22,56 @@ cargo run
 ```
 
 Query the following endpoints
-- [http://localhost:7878/tx?hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c](http://localhost:7878/tx?hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c) example for single tx, accuracy is demonstrated
-- [http://localhost:7878/batch?start_block=0&end_block=4928274](http://localhost:7878/batch?start_block=0&end_block=4928274)
+
+- [http://localhost:7878/tx/hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c](http://localhost:7878/tx/hash=0xd01a5063a485cee4045fb6edad8a72329680604b5e4e62327b68aa470cd4c65c) example for single tx, accuracy is demonstrated
+- [http://localhost:7878/batch?start_block=20849591&end_block=20849593](http://localhost:7878/batch?start_block=20849591&end_block=20849593)
 
 ### Kafka
-[https://hub.docker.com/r/apache/kafka](https://hub.docker.com/r/apache/kafka) 
+
+[https://hub.docker.com/r/apache/kafka](https://hub.docker.com/r/apache/kafka)
+
 ```bash
 docker run -d --name broker apache/kafka:latest
-# or 
+# or
 docker compose up -d
 docker exec --workdir /opt/kafka/bin/ -it broker sh
 ./kafka-topics.sh --bootstrap-server localhost:9092 --create --topic test-topic
 ./kafka-console-producer.sh --bootstrap-server localhost:9092 --topic test-topic
 ./kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic test-topic --from-beginning
-brew install kafka 
-kafka-console-consumer --bootstrap-server localhost:9092 --topic test-topic 
+brew install kafka
+kafka-console-consumer --bootstrap-server localhost:9092 --topic test-topic
 ```
 
-[https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust](https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust) 
+When dockerising
+
+```bash
+docker run -it --workdir /opt/kafka/bin/ --network micah_default nicolaka/netshoot bash
+docker run -it --workdir /opt/kafka/bin/ --network micah_default apache/kafka bash
+./kafka-topics.sh --bootstrap-server broker:9092 --create --topic test-topic
+./kafka-console-producer.sh --bootstrap-server localhost:9092 --topic test-topic
+docker exec --workdir /opt/kafka/bin/ -it broker ./kafka-topics.sh --bootstrap-server localhost:9092 --create --topic test-topic
+docker compose up -d process
+```
+
+[https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust](https://github.com/confluentinc/examples/tree/7.7.0-post/clients/cloud/rust)
 
 ### Stress Testing (Part 1)
-Use [https://github.com/BuoyantIO/slow_cooker](https://github.com/BuoyantIO/slow_cooker) on `endpoints.txt`. 
+
+Use [https://github.com/BuoyantIO/slow_cooker](https://github.com/BuoyantIO/slow_cooker) on `endpoints.txt`.
 
 ```bash
 cd ..
-git clone https://github.com/BuoyantIO/slow_cooker 
+git clone https://github.com/BuoyantIO/slow_cooker
 cd slow_cooker
-go build 
+go build
 cp ../micah/endpoints.txt .
 slow_cooker -qps 10 @endpoints.txt
 ```
 
-Results: 
+Results:
+
 - single threaded, without caching (one tx hash)
+
 ```
 {
   "p50": 1192,
@@ -64,7 +82,9 @@ Results:
   "p999": 2009
 }
 ```
+
 - single threaded, with caching of decode_tx (one tx hash)
+
 ```
 {
   "p50": 113,
@@ -75,7 +95,9 @@ Results:
   "p999": 1160 -> This is the initial request time
 }
 ```
+
 - single threaded, with caching of decode_tx and binance eth_usdt_price (one tx hash)
+
 ```
 {
   "p50": 3,
@@ -86,7 +108,9 @@ Results:
   "p999": 1472
 }
 ```
+
 Ramped up to 100 qps with concurrency 100 and got a few timeouts
+
 ```
 {
   "p50": 4,
@@ -97,7 +121,8 @@ Ramped up to 100 qps with concurrency 100 and got a few timeouts
   "p999": 1386
 }
 ```
-### 
+
+###
 
 ## Rust C FFI (experimental)
 

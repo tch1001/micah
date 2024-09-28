@@ -7,7 +7,7 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       # allow all connections 0.0.0.0
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
@@ -25,3 +25,47 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
+
+  process:
+    # local docker image
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # CMD ["./target/release/process"]
+    command: ["./target/release/process"]
+    container_name: process
+    depends_on:
+      - broker
+      - redis
+    environment:
+      KAFKA_BROKER: broker:9092
+      REDIS_URL: redis://redis:6379
+
+  listener:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # CMD ["./target/release/listener"]
+    command: ["./target/release/listener"]
+    container_name: listener
+    depends_on:
+      - broker
+    environment:
+      KAFKA_BROKER: broker:9092
+      REDIS_URL: redis://redis:6379
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # CMD ["./target/release/web"]
+    command: ["./target/release/web"]
+    container_name: web
+    depends_on:
+      - broker
+      - redis
+    environment:
+      KAFKA_BROKER: broker:9092
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "7878:7878"

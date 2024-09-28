@@ -7,6 +7,8 @@ use alloy::{
     rpc::types::BlockTransactionsKind,
 };
 use rdkafka::{
+    admin::AdminOptions,
+    config::FromClientConfig,
     consumer::{Consumer, StreamConsumer},
     ClientConfig, Message,
 };
@@ -115,9 +117,28 @@ async fn main() {
     let topic = std::env::var("TOPIC").expect("TOPIC must be set");
 
     // let topic = "test-topic";
+    let kafka_broker = std::env::var("KAFKA_BROKER").expect("KAFKA_BROKER must be set");
+    println!("Kafka Broker: {}", kafka_broker);
+    let group_id = std::env::var("GROUP_ID").map_or("test-group".to_string(), |x| x);
+
+    // // create a topic if it doesn't exist
+    // let admin_client = rdkafka::admin::AdminClient::from_config(
+    //     &ClientConfig::new().set("bootstrap.servers", kafka_broker.as_str()),
+    // )
+    // .expect("AdminClient creation failed");
+    // let topic_spec = rdkafka::admin::NewTopic::new(
+    //     topic.as_str(),
+    //     1,
+    //     rdkafka::admin::TopicReplication::Fixed(1),
+    // );
+    // let _ = admin_client
+    //     .create_topics(&[topic_spec], &AdminOptions::new())
+    //     .await
+    //     .expect("Failed to create topic");
+
     let consumer = ClientConfig::new()
-        .set("group.id", "test-group")
-        .set("bootstrap.servers", "localhost:9092")
+        .set("group.id", group_id)
+        .set("bootstrap.servers", kafka_broker.as_str())
         .create::<StreamConsumer>()
         .expect("Consumer creation failed");
     consumer
@@ -126,7 +147,8 @@ async fn main() {
 
     let http_provider: RootProvider<alloy::transports::http::Http<reqwest::Client>> =
         ProviderBuilder::new().on_http(rpc_url_http.parse().unwrap());
-    let client = redis::Client::open("redis://localhost:6379").expect("Failed to connect to Redis");
+    let redis_url = std::env::var("REDIS_URL").expect("REDIS_URL must be set");
+    let client = redis::Client::open(redis_url).expect("Failed to connect to Redis");
     let mut con = client.get_connection().expect("Failed to get connection");
 
     loop {
@@ -143,7 +165,7 @@ async fn main() {
                 content.to_string()
             }
         };
-        let (mut gas_fee, mut timestamp_sec) = match decode_tx(&http_provider, &hash).await {
+        let (gas_fee, timestamp_sec) = match decode_tx(&http_provider, &hash).await {
             Err(e) => {
                 println!("Ignoring {}, Error: {}", hash, e);
                 continue;

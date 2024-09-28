@@ -150,7 +150,6 @@ pub async fn binance_eth_usdt_price(
     if local_cache.contains_key(&time_ms) {
         return Some(local_cache[&time_ms]);
     }
-
     return None;
 }
 
